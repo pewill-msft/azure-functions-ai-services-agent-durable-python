@@ -11,10 +11,13 @@
       "version": "latest",
       "enableNonRootDocker": "true"
     },
-    "ghcr.io/azure/azure-dev/azd:latest": {}
+    "ghcr.io/azure/azure-dev/azd:latest": {},
+    "ghcr.io/devcontainers/features/node:1": {
+            "version": "lts"
+        }
   },
 
-  "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r app/requirements.txt",
+  "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r app/requirements.txt && npm install -g @azure/static-web-apps-cli",
 
   "customizations": {
     "vscode": {
