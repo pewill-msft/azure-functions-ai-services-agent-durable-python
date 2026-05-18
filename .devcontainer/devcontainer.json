@@ -11,9 +11,7 @@
       "version": "latest",
       "enableNonRootDocker": "true"
     },
-    "ghcr.io/devcontainers/features/azure-dev:1": {
-      "version": "latest"
-    }
+    "ghcr.io/azure/azure-dev/azd:latest": {}
   },
 
   "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r app/requirements.txt",
