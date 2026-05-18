@@ -1,8 +1,9 @@
 
 {
   "name": "Python Dev",
-  "image": "mcr.microsoft.com/devcontainers/python:3.11",
-
+  "build": {
+        "dockerfile": "Dockerfile"
+    },
   "features": {
     "ghcr.io/devcontainers/features/azure-cli:1": {
       "installBicep": true
