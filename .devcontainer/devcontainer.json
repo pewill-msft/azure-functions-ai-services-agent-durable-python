@@ -1,0 +1,40 @@
+
+{
+  "name": "Python Dev",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "installBicep": true
+    },
+     "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "version": "latest",
+            "enableNonRootDocker": "true"
+        }
+  },
+
+  "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r requirements.txt",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-azurefunctions",
+          "github.copilot",
+          "github.copilot-chat",
+          "ms-python.autopep8",
+          "ms-python.debugpy",
+          "ms-python.python",
+          "ms-python.vscode-pylance",
+          "ms-python.vscode-python-envs",
+          "Azurite.azurite",
+          "ms-azuretools.vscode-azurestorage",
+          "ms-azuretools.vscode-bicep",
+          "github.github-vscode-theme"
+      ],
+       "settings": {
+                "workbench.colorTheme": "GitHub Dark Default"
+            }
+    }
+  }
+}
