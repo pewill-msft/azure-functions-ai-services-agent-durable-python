@@ -4,6 +4,9 @@ param tags object = {}
 param userAssignedIdentityId string = ''
 param backendResourceId string = ''
 
+@description('Region where the linked backend resource is deployed. Required because SWA may be in a different region than the backend Function App.')
+param backendRegion string = location
+
 resource staticWebApp 'Microsoft.Web/staticSites@2024-04-01' = {
   name: name
   location: location
@@ -35,7 +38,7 @@ resource linkedStaticWebAppBackend 'Microsoft.Web/staticSites/linkedBackends@202
   name: 'linkedBackend'
   properties: {
     backendResourceId: backendResourceId
-    region: location
+    region: backendRegion
   }
 }
 

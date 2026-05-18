@@ -2,8 +2,10 @@
   "name": "agent-frontendp",
   "version": "0.1.0",
   "private": true,
+  "proxy": "http://localhost:7071",
   "dependencies": {
     "@azure/storage-blob": "^12.26.0",
+    "axios": "^1.16.1",
     "cra-template": "1.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

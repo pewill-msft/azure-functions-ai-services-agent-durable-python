@@ -12,7 +12,25 @@ services:
     project: ./frontend/
     language: js
     host: staticwebapp
+    dist: build
 hooks:
+  preprovision:
+    posix:
+      shell: sh
+      run: |
+        if [ -z "$(azd env get-value AZURE_PRINCIPAL_ID 2>/dev/null)" ]; then
+          PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
+          azd env set AZURE_PRINCIPAL_ID "$PRINCIPAL_ID"
+        fi
+      continueOnError: false
+    windows:
+      shell: pwsh
+      run: |
+        if (-not (azd env get-value AZURE_PRINCIPAL_ID 2>$null)) {
+          $principalId = az ad signed-in-user show --query id -o tsv
+          azd env set AZURE_PRINCIPAL_ID $principalId
+        }
+      continueOnError: false
   postprovision:
     windows:
       shell: pwsh

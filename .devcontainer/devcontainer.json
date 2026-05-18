@@ -17,7 +17,7 @@
         }
   },
 
-  "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r app/requirements.txt && npm install -g @azure/static-web-apps-cli",
+  "postCreateCommand": "pip3 install --upgrade pip && pip3 install --user -r app/requirements.txt && npm install -g @azure/static-web-apps-cli azure-functions-core-tools@4 --unsafe-perm true",
 
   "customizations": {
     "vscode": {

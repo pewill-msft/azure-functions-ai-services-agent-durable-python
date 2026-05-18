@@ -17,7 +17,7 @@
       "hubName": "%TASKHUB_NAME%",
       "storageProvider": {
         "type": "azureManaged",
-        "connectionStringName": "DTS_CONNECTION_STRING"
+        "connectionStringName": "DURABLE_TASK_SCHEDULER_CONNECTION_STRING"
       },
       "queues": {
         "maxPollingInterval": "00:00:02",

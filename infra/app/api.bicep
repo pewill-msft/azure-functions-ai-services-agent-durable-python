@@ -3,6 +3,7 @@ param location string = resourceGroup().location
 param tags object = {}
 param applicationInsightsName string = ''
 param appServicePlanId string
+@secure()
 param appSettings object = {}
 param runtimeName string 
 param runtimeVersion string 

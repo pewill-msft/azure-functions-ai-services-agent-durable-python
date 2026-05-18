@@ -5,10 +5,28 @@ import requests
 import os
 import json
 import time
-from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
+from azure.ai.agents import AgentsClient
+from azure.ai.agents.models import AzureFunctionStorageQueue, AzureFunctionTool
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.storage.queue import QueueClient, BinaryBase64EncodePolicy, BinaryBase64DecodePolicy
+from openai import AzureOpenAI
 from datetime import datetime, timedelta
+
+_aoai_client = None
+
+def get_aoai_client() -> AzureOpenAI:
+    """Return a singleton AzureOpenAI client authenticated via AAD."""
+    global _aoai_client
+    if _aoai_client is None:
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
+        )
+        _aoai_client = AzureOpenAI(
+            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+            azure_ad_token_provider=token_provider,
+            api_version="2024-10-21",
+        )
+    return _aoai_client
 
 # Initialize the Durable Functions app with anonymous HTTP authentication level
 app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -21,62 +39,55 @@ def initialize_client():
     """
     Initialize the agent client and the tools Azure Functions that the agent can use.
     """
-    # Create a project client using the connection string from local.settings.json
-    project_client = AIProjectClient.from_connection_string(
+    # Create an agents client pointed at the AI Foundry project endpoint
+    agents_client = AgentsClient(
+        endpoint=os.environ["PROJECT_ENDPOINT"],
         credential=DefaultAzureCredential(),
-        conn_str=os.environ["PROJECT_CONNECTION_STRING"]
     )
 
-    # Get the connection string from local.settings.json
+    # Storage queue service endpoint used to bridge Agent <-> Azure Function
     storage_connection_string = os.environ.get("STORAGE_CONNECTION__queueServiceUri")
 
-    # Create an agent with the Azure Function tool to get the weather
-    agent = project_client.agents.create_agent(
-        model="gpt-4o-mini",
+    azure_function_tool = AzureFunctionTool(
+        name="GitHubIssuesSummaries",
+        description="Provide a summary of the GitHub issues for the organization within a specified time period.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "organization": {
+                    "type": "string",
+                    "description": "The organization to find GitHub issues for.",
+                },
+                "time": {
+                    "type": "string",
+                    "description": "The specific time period for which the user is querying GitHub issues.",
+                },
+            },
+            "required": ["time"],
+        },
+        input_queue=AzureFunctionStorageQueue(
+            queue_name=input_queue_name,
+            storage_service_endpoint=storage_connection_string,
+        ),
+        output_queue=AzureFunctionStorageQueue(
+            queue_name=output_queue_name,
+            storage_service_endpoint=storage_connection_string,
+        ),
+    )
+
+    agent = agents_client.create_agent(
+        model=os.environ["AGENT_MODEL_DEPLOYMENT_NAME"],
         name="azure-function-agent-summarize-github-issues",
         instructions="You are a helpful support agent. Answer the user's questions to the best of your ability.",
-        headers={"x-ms-enable-preview": "true"},
-        tools=[
-            {
-                "type": "azure_function",
-                "azure_function": {
-                    "function": {
-                        "name": "GitHubIssuesSummaries",
-                        "description": "Provide a summary of the GitHub issues for the organization within a specified time period.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "organization": {"type": "string", "description": "The organization to find GitHub issues for."},
-                                "time": {"type": "string", "description": "The specific time period for which the user is querying GitHub issues."}
-                            },
-                            "required": ["time"]
-                        }
-                    },
-                    "input_binding": {
-                        "type": "storage_queue",
-                        "storage_queue": {
-                            "queue_service_uri": storage_connection_string,
-                            "queue_name": input_queue_name
-                        }
-                    },
-                    "output_binding": {
-                        "type": "storage_queue",
-                        "storage_queue": {
-                            "queue_service_uri": storage_connection_string,
-                            "queue_name": output_queue_name
-                        }
-                    }
-                }
-            }
-        ],
+        tools=azure_function_tool.definitions,
     )
     logging.info(f"Created agent, agent ID: {agent.id}")
 
     # Create a thread for communication with the agent
-    thread = project_client.agents.create_thread()
+    thread = agents_client.threads.create()
     logging.info(f"Created thread, thread ID: {thread.id}")
 
-    return project_client, thread, agent
+    return agents_client, thread, agent
 
 @app.route(route="prompt", auth_level=func.AuthLevel.ANONYMOUS)
 def prompt(req: func.HttpRequest) -> func.HttpResponse:
@@ -116,43 +127,43 @@ def prompt(req: func.HttpRequest) -> func.HttpResponse:
     prompt = req_body.get('Prompt')
 
     # Initialize the agent client
-    project_client, thread, agent = initialize_client()
+    agents_client, thread, agent = initialize_client()
 
-    # Send the prompt to the agent
-    message = project_client.agents.create_message(
-        thread_id=thread.id,
-        role="user",
-        content=prompt,
-    )
-    logging.info(f"Created message, message ID: {message.id}")
-
-    # Run the agent and monitor its status
-    run = project_client.agents.create_run(thread_id=thread.id, agent_id=agent.id)
-    
-    while run.status in ["queued", "in_progress", "requires_action"]:
-        time.sleep(1)
-        run = project_client.agents.get_run(thread_id=thread.id, run_id=run.id)
-
-        if run.status not in ["queued", "in_progress", "requires_action"]:
-            break
-
-    logging.info(f"Run finished with status: {run.status}")
-
-    if run.status == "failed":
-        logging.error(f"Run failed: {run.last_error}")
-
-    # Get messages from the assistant thread and retrieve the last message from the assistant
-    messages = project_client.agents.list_messages(thread_id=thread.id)
-    logging.info(f"Messages: {messages}")    # Get the last message from the agent
     last_msg = None
-    for data_point in messages.data:
-        if data_point.role == "assistant":
-            last_msg = data_point.content[-1]
-            print(f"Last Message: {last_msg.text.value}")
-            break
-    
-    # Delete the agent once done
-    project_client.agents.delete_agent(agent.id)
+    try:
+        # Send the prompt to the agent
+        message = agents_client.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=prompt,
+        )
+        logging.info(f"Created message, message ID: {message.id}")
+
+        # Run the agent and monitor its status
+        run = agents_client.runs.create(thread_id=thread.id, agent_id=agent.id)
+
+        while run.status in ["queued", "in_progress", "requires_action"]:
+            time.sleep(1)
+            run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+
+        logging.info(f"Run finished with status: {run.status}")
+
+        if run.status == "failed":
+            logging.error(f"Run failed: {run.last_error}")
+
+        # Get messages from the assistant thread and retrieve the last assistant message
+        messages = agents_client.messages.list(thread_id=thread.id)
+        for data_point in messages:
+            if data_point['role'] == "assistant":
+                last_msg = data_point['content'][-1]
+                logging.info(f"Last Message: {last_msg.text.value}")
+                break
+    finally:
+        # Delete the agent once done
+        try:
+            agents_client.delete_agent(agent.id)
+        except Exception as e:
+            logging.warning(f"Failed to delete agent {agent.id}: {e}")
     
     # Get the origin from the request for response
     origin = req.headers.get('Origin', '')
@@ -256,7 +267,7 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
 
     # Send message to queue. Sends a mock message for the weather
     result_message = {
-        'Value': summary['content'],
+        'Value': summary,
         'CorrelationId': correlation_id
     }
 
@@ -309,15 +320,19 @@ def get_repos(organization):
 
 @app.function_name(name="AskAOAI")
 @app.activity_trigger(input_name='prompt')
-@app.generic_input_binding(arg_name="response", type="textCompletion", data_type=func.DataType.STRING, prompt = "{prompt}", model = "%CHAT_MODEL_DEPLOYMENT_NAME%")
-def ask_llm(prompt, response: str):
+def ask_llm(prompt: str):
     """
-    Activity function to convert the time.
+    Activity function that asks Azure OpenAI a question via chat completions.
     """
-    logging.info(f"in ConvertTime activity")
-    response_json = json.loads(response)
-    logging.info(response_json['content'])
-    return response_json['content'] 
+    logging.info("in AskAOAI activity")
+    client = get_aoai_client()
+    completion = client.chat.completions.create(
+        model=os.environ["CHAT_MODEL_DEPLOYMENT_NAME"],
+        messages=[{"role": "user", "content": prompt}],
+    )
+    content = completion.choices[0].message.content
+    logging.info(content)
+    return content
    
 @app.function_name(name="QueryNewIssues")
 @app.activity_trigger(input_name='queryDetails')
@@ -364,15 +379,18 @@ def get_issues(queryDetails):
 
 @app.function_name(name="SummarizeIssues")
 @app.activity_trigger(input_name='allIssues')
-@app.generic_input_binding(arg_name="response", type="textCompletion", max_tokens="1,000", data_type=func.DataType.STRING, prompt="Generate a summary of the following GitHub issues and determine: {allIssues}", model = "%CHAT_MODEL_DEPLOYMENT_NAME%")
-def summarize_issues(allIssues, response: str):
+def summarize_issues(allIssues):
     """
-    Activity function to generate a summary using Azure OpenAI.
+    Activity function to generate a summary using Azure OpenAI chat completions.
     """
-    logging.info(f"in summarize_text activity")
-    response_json = json.loads(response)
-    logging.info(response_json['content'])
-    return response_json 
+    logging.info("in SummarizeIssues activity")
+    client = get_aoai_client()
+    completion = client.chat.completions.create(
+        model=os.environ["CHAT_MODEL_DEPLOYMENT_NAME"],
+        messages=[{"role": "user", "content": f"Generate a summary of the following GitHub issues and determine: {allIssues}"}],
+        max_tokens=1000,
+    )
+    return completion.choices[0].message.content
 
 def filter_empty_issues(allIssues):
     """

@@ -1,4 +1,4 @@
-// Creates Azure dependent resources for Azure AI studio
+// Creates Azure dependent resources for the AI Foundry account-based project model
 
 @description('Azure region of the deployment')
 param location string = resourceGroup().location
@@ -6,17 +6,17 @@ param location string = resourceGroup().location
 @description('Tags to add to the resources')
 param tags object = {}
 
-@description('AI services name')
+@description('AI services (Foundry) account name')
 param aiServicesName string
-
-@description('The name of the Key Vault')
-param keyvaultName string
 
 @description('The name of the AI Search resource')
 param aiSearchName string
 
-@description('Name of the storage account')
+@description('Name of the storage account used by the agent for artifacts')
 param storageName string
+
+@description('Name of the Cosmos DB account used for agent thread storage')
+param cosmosDbName string
 
 @description('Model name for deployment')
 param modelName string 
@@ -45,62 +45,50 @@ param aiSearchServiceResourceId string
 @description('The AI Storage Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
 param aiStorageAccountResourceId string 
 
+@description('The AI Cosmos DB Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
+param aiCosmosDbAccountResourceId string = ''
+
 var aiServiceExists = aiServiceAccountResourceId != ''
 var acsExists = aiSearchServiceResourceId != ''
 var aiStorageExists = aiStorageAccountResourceId != ''
+var cosmosExists = aiCosmosDbAccountResourceId != ''
 
-resource keyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
-  name: keyvaultName
-  location: location
-  tags: tags
-  properties: {
-    createMode: 'default'
-    enabledForDeployment: false
-    enabledForDiskEncryption: false
-    enabledForTemplateDeployment: false
-    enableSoftDelete: true
-    enableRbacAuthorization: true
-    enablePurgeProtection: true
-    networkAcls: {
-      bypass: 'AzureServices'
-      defaultAction: 'Deny'
-    }
-    sku: {
-      family: 'A'
-      name: 'standard'
-    }
-    softDeleteRetentionInDays: 7
-    tenantId: subscription().tenantId
-  }
-}
-
+// AI Foundry account (Microsoft.CognitiveServices/accounts kind=AIServices)
+// allowProjectManagement: true is required to host Foundry projects as child
+// resources. This single account also serves the Azure OpenAI API surface used
+// by the Azure Functions OpenAI binding (no separate OpenAI account needed).
 
 var aiServiceParts = split(aiServiceAccountResourceId, '/')
 
-resource existingAIServiceAccount 'Microsoft.CognitiveServices/accounts@2023-05-01' existing = if (aiServiceExists) {
+resource existingAIServiceAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = if (aiServiceExists) {
   name: aiServiceParts[8]
   scope: resourceGroup(aiServiceParts[2], aiServiceParts[4])
 }
 
-resource aiServices 'Microsoft.CognitiveServices/accounts@2024-06-01-preview' = if(!aiServiceExists) {
+resource aiServices 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if(!aiServiceExists) {
   name: aiServicesName
   location: modelLocation
   sku: {
     name: 'S0'
   }
-  kind: 'AIServices' // or 'OpenAI'
+  kind: 'AIServices'
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
+    allowProjectManagement: true
     customSubDomainName: toLower('${(aiServicesName)}')
-    apiProperties: {
-      statisticsEnabled: false
+    networkAcls: {
+      defaultAction: 'Allow'
+      virtualNetworkRules: []
+      ipRules: []
     }
     publicNetworkAccess: 'Enabled'
+    // API-key based auth is not supported for the Agent service
+    disableLocalAuth: false
   }
 }
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-06-01-preview'= if(!aiServiceExists){
+resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview'= if(!aiServiceExists){
   parent: aiServices
   name: modelName
   sku : {
@@ -175,6 +163,41 @@ resource storage 'Microsoft.Storage/storageAccounts@2022-05-01' = if(!aiStorageE
   }
 }
 
+// Cosmos DB for agent thread storage (required by the project capability host
+// in the account-based Foundry model).
+
+var cosmosAccountParts = split(aiCosmosDbAccountResourceId, '/')
+
+resource existingCosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = if (cosmosExists) {
+  name: cosmosAccountParts[8]
+  scope: resourceGroup(cosmosAccountParts[2], cosmosAccountParts[4])
+}
+
+var canaryRegions = ['eastus2euap', 'centraluseuap']
+var cosmosDbRegion = contains(canaryRegions, location) ? 'eastus2' : location
+resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = if(!cosmosExists) {
+  name: cosmosDbName
+  location: cosmosDbRegion
+  kind: 'GlobalDocumentDB'
+  properties: {
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'
+    }
+    disableLocalAuth: true
+    enableAutomaticFailover: false
+    enableMultipleWriteLocations: false
+    enableFreeTier: false
+    locations: [
+      {
+        locationName: location
+        failoverPriority: 0
+        isZoneRedundant: false
+      }
+    ]
+    databaseAccountOfferType: 'Standard'
+  }
+}
+
 output aiServicesName string =  aiServiceExists ? existingAIServiceAccount.name : aiServicesName
 output aiservicesID string = aiServiceExists ? existingAIServiceAccount.id : aiServices.id
 output aiservicesTarget string = aiServiceExists ? existingAIServiceAccount.properties.endpoint : aiServices.properties.endpoint
@@ -191,4 +214,7 @@ output storageId string =  aiStorageExists ? existingAIStorageAccount.id :  stor
 output storageAccountResourceGroupName string = aiStorageExists ? aiStorageParts[4] : resourceGroup().name
 output storageAccountSubscriptionId string = aiStorageExists ? aiStorageParts[2] : subscription().subscriptionId
 
-output keyvaultId string = keyVault.id
+output cosmosDbAccountName string = cosmosExists ? existingCosmosDbAccount.name : cosmosDbAccount.name
+output cosmosDbAccountId string = cosmosExists ? existingCosmosDbAccount.id : cosmosDbAccount.id
+output cosmosDbAccountResourceGroupName string = cosmosExists ? cosmosAccountParts[4] : resourceGroup().name
+output cosmosDbAccountSubscriptionId string = cosmosExists ? cosmosAccountParts[2] : subscription().subscriptionId

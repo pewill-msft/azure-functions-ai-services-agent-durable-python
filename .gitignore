@@ -12,6 +12,13 @@ app/newenv
 app/local.settings.json
 .DS_Store
 
+# Azurite local emulator artifacts
+AzuriteConfig
+__azurite_db_*.json
+__blobstorage__/
+__queuestorage__/
+__tablestorage__/
+
 # User-specific files
 *.rsuser
 *.suo

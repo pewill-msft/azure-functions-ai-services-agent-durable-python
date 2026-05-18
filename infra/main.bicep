@@ -6,8 +6,18 @@ targetScope = 'subscription'
 param environmentName string
 
 @minLength(1)
-@description('Primary location for all resources')
-@allowed(['eastus', 'westus2'])
+@description('Primary location for all resources. Must support Azure Functions Flex Consumption AND Microsoft.DurableTask/schedulers.')
+@allowed([
+  'eastus'
+  'eastus2'
+  'westus2'
+  'westus3'
+  'northeurope'
+  'swedencentral'
+  'uksouth'
+  'australiaeast'
+  'southeastasia'
+])
 @metadata({
   azd: {
     type: 'location'
@@ -48,14 +58,9 @@ param disableLocalAuth bool = true
 @description('Id of the user or app to assign application roles')
 param principalId string = ''
 
-@description('Name for the AI resource and used to derive name of dependent resources.')
-param aiHubName string = 'hub-demo'
-
-@description('Friendly name for your Hub resource')
-param aiHubFriendlyName string = 'Agents Hub resource'
-
-@description('Description of your Azure AI resource displayed in AI studio')
-param aiHubDescription string = 'This is an example AI resource for use in Azure AI Studio.'
+@secure()
+@description('GitHub Personal Access Token used by the function app to call the GitHub REST API. Set via: azd env set GITHUB_ACCESS_TOKEN <token>')
+param githubAccessToken string = ''
 
 @description('Name for the AI project resources.')
 param aiProjectName string = 'project-demo'
@@ -69,29 +74,35 @@ param aiProjectDescription string = 'This is an example AI Project resource for 
 @description('Name of the Azure AI Search account')
 param aiSearchName string = 'agentaisearch'
 
-@description('Name for capabilityHost.')
-param capabilityHostName string = 'caphost1'
+@description('Name of the Cosmos DB account for agent thread storage')
+param cosmosDbName string = 'agentcosmos'
 
-@description('Name of the Azure AI Services account')
+@description('Name for the account-level capabilityHost.')
+param accountCapabilityHostName string = 'caphostacc'
+
+@description('Name for the project-level capabilityHost.')
+param projectCapabilityHostName string = 'caphostproj'
+
+@description('Name of the Azure AI Services (Foundry) account')
 param aiServicesName string = 'agentaiservices'
 
 @description('Model name for deployment')
-param modelName string = 'gpt-4o-mini'
+param modelName string = 'gpt-4.1-mini'
 
 @description('Model format for deployment')
 param modelFormat string = 'OpenAI'
 
 @description('Model version for deployment')
-param modelVersion string = '2024-07-18'
+param modelVersion string = '2025-04-14'
 
 @description('Model deployment SKU name')
 param modelSkuName string = 'GlobalStandard'
 
 @description('Model deployment capacity')
-param modelCapacity int = 50
+param modelCapacity int = 10
 
 @description('Model deployment location. If you want to deploy an Azure AI resource/model in different location than the rest of the resources created.')
-param modelLocation string = 'eastus'
+param modelLocation string = location
 
 @description('The AI Service Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
 param aiServiceAccountResourceId string = ''
@@ -102,34 +113,20 @@ param aiSearchServiceResourceId string = ''
 @description('The Ai Storage Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
 param aiStorageAccountResourceId string = ''
 
+@description('The Cosmos DB Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
+param aiCosmosDbAccountResourceId string = ''
+
 // Variables
 var abbrs = loadJsonContent('./abbreviations.json')
 var resourceToken = toLower(uniqueString(subscription().id, rg.id ,environmentName, location))
 var tags = { 'azd-env-name': environmentName }
 var functionAppName = !empty(apiServiceName) ? apiServiceName : '${abbrs.webSitesFunctions}api-${resourceToken}'
 var deploymentStorageContainerName = 'app-package-${take(functionAppName, 32)}-${take(toLower(uniqueString(functionAppName, resourceToken)), 7)}'
-var name = toLower('${aiHubName}')
 var projectName = toLower('${aiProjectName}')
 param dtsSkuName string = 'Dedicated'
 param dtsCapacity int = 1
 param dtsName string = ''
 param taskHubName string = ''
-param openAiServiceName string = ''
- 
-param openAiSkuName string
-@allowed([ 'azure', 'openai', 'azure_custom' ])
-param openAiHost string // Set in main.parameters.json
-param chatModelName string = ''
-param chatDeploymentName string = ''
-param chatDeploymentVersion string = ''
-param chatDeploymentCapacity int = 0
-
-var chatModel = {
-  modelName: !empty(chatModelName) ? chatModelName : startsWith(openAiHost, 'azure') ? 'gpt-4o' : 'gpt-4o'
-  deploymentName: !empty(chatDeploymentName) ? chatDeploymentName : 'chat'
-  deploymentVersion: !empty(chatDeploymentVersion) ? chatDeploymentVersion : '2024-08-06'
-  deploymentCapacity: chatDeploymentCapacity != 0 ? chatDeploymentCapacity : 3
-}
 
 // Create a short, unique suffix, that will be unique to each resource group
 var uniqueSuffix = toLower(uniqueString(subscription().id, rg.id, location))
@@ -148,12 +145,28 @@ resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
 }
 
 // The application frontend webapp
+// Static Web Apps is only available in a limited set of regions. Map the
+// primary location to the nearest supported SWA region.
+var staticWebAppRegionMap = {
+  eastus: 'eastus2'
+  eastus2: 'eastus2'
+  westus2: 'westus2'
+  westus3: 'westus2'
+  northeurope: 'westeurope'
+  swedencentral: 'westeurope'
+  uksouth: 'westeurope'
+  australiaeast: 'eastasia'
+  southeastasia: 'eastasia'
+}
+var staticWebAppLocation = contains(staticWebAppRegionMap, location) ? staticWebAppRegionMap[location] : 'westeurope'
+
 module webapp './app/staticwebapp.bicep' = {
   name: 'webapp-${resourceToken}'
   scope: rg
   params: {
     name: !empty(webAppName) ? webAppName : '${abbrs.webStaticSites}web-${resourceToken}'
-    location: location
+    location: staticWebAppLocation
+    backendRegion: location
     tags: union(tags, { 'azd-service-name': 'web' })
     backendResourceId: api.outputs.Service_API_ID
     userAssignedIdentityId: apiUserAssignedIdentity.outputs.identityId
@@ -203,12 +216,17 @@ module api './app/api.bicep' = {
     identityClientId: apiUserAssignedIdentity.outputs.identityClientId
     allowedOrigins: [ webUri ]
     appSettings: {
-      PROJECT_CONNECTION_STRING: aiProject.outputs.projectConnectionString
+      PROJECT_ENDPOINT: aiProject.outputs.projectEndpoint
       STORAGE_CONNECTION__queueServiceUri: 'https://${storage.outputs.name}.queue.${environment().suffixes.storage}'
       DURABLE_TASK_SCHEDULER_CONNECTION_STRING: 'Endpoint=${dts.outputs.dts_URL};Authentication=ManagedIdentity;ClientID=${apiUserAssignedIdentity.outputs.identityClientId}'
       TASKHUB_NAME: dts.outputs.TASKHUB_NAME
-      AZURE_OPENAI_ENDPOINT: 'https://${openAi.outputs.name}.openai.azure.com/'
-      CHAT_MODEL_DEPLOYMENT_NAME: chatModel.deploymentName
+      // One AI Services (Foundry) account serves BOTH the Agent runtime and
+      // the Azure Functions OpenAI binding. The 'openai.azure.com' alias
+      // resolves to the same account thanks to customSubDomainName.
+      AZURE_OPENAI_ENDPOINT: 'https://${aiDependencies.outputs.aiServicesName}.openai.azure.com/'
+      CHAT_MODEL_DEPLOYMENT_NAME: modelName
+      AGENT_MODEL_DEPLOYMENT_NAME: modelName
+      GITHUB_ACCESS_TOKEN: githubAccessToken
     }
     virtualNetworkSubnetId: skipVnet ? '' : serviceVirtualNetwork.outputs.appSubnetID
   }
@@ -232,95 +250,104 @@ module storage 'core/storage/storage-account.bicep' = {
   }
 }
 
-// Dependent resources for the Azure Machine Learning workspace
+// AI Foundry account (Microsoft.CognitiveServices/accounts kind=AIServices)
+// + AI Search + Storage + Cosmos DB. The Foundry account also serves the
+// OpenAI API endpoint used by the Azure Functions OpenAI binding -- no
+// separate Azure OpenAI account is provisioned.
 module aiDependencies './agent/standard-dependent-resources.bicep' = {
-  name: 'dependencies${name}${uniqueSuffix}deployment'
+  name: 'dependencies${projectName}${uniqueSuffix}deployment'
   scope: rg
   params: {
-    location: 'eastus'
-    storageName: 'st${uniqueSuffix}'
-    keyvaultName: 'kv${name}${uniqueSuffix}'
+    location: location
+    storageName: 'stai${uniqueSuffix}'
     aiServicesName: '${aiServicesName}${uniqueSuffix}'
     aiSearchName: '${aiSearchName}${uniqueSuffix}'
+    cosmosDbName: '${cosmosDbName}${uniqueSuffix}'
     tags: tags
 
-     // Model deployment parameters
-     modelName: modelName
-     modelFormat: modelFormat
-     modelVersion: modelVersion
-     modelSkuName: modelSkuName
-     modelCapacity: modelCapacity  
-     modelLocation: modelLocation
+    // Model deployment parameters -- one deployment serves BOTH the Agent
+    // (model = modelName) AND the Functions OpenAI binding
+    // (CHAT_MODEL_DEPLOYMENT_NAME = modelName).
+    modelName: modelName
+    modelFormat: modelFormat
+    modelVersion: modelVersion
+    modelSkuName: modelSkuName
+    modelCapacity: modelCapacity
+    modelLocation: modelLocation
 
-     aiServiceAccountResourceId: aiServiceAccountResourceId
-     aiSearchServiceResourceId: aiSearchServiceResourceId
-     aiStorageAccountResourceId: aiStorageAccountResourceId
-    }
-}
-
-module aiHub './agent/standard-ai-hub.bicep' = {
-  name: '${name}${uniqueSuffix}deployment'
-  scope: rg
-  params: {
-    // workspace organization
-    aiHubName: '${name}${uniqueSuffix}'
-    aiHubFriendlyName: aiHubFriendlyName
-    aiHubDescription: aiHubDescription
-    location: 'eastus'
-    tags: tags
-    capabilityHostName: '${name}${uniqueSuffix}${capabilityHostName}'
-
-    aiSearchName: aiDependencies.outputs.aiSearchName
-    aiSearchId: aiDependencies.outputs.aisearchID
-
-    aiServicesName: aiDependencies.outputs.aiServicesName
-    aiServicesId: aiDependencies.outputs.aiservicesID
-    aiServicesTarget: aiDependencies.outputs.aiservicesTarget
-    
-    keyVaultId: aiDependencies.outputs.keyvaultId
-    storageAccountId: aiDependencies.outputs.storageId
+    aiServiceAccountResourceId: aiServiceAccountResourceId
+    aiSearchServiceResourceId: aiSearchServiceResourceId
+    aiStorageAccountResourceId: aiStorageAccountResourceId
+    aiCosmosDbAccountResourceId: aiCosmosDbAccountResourceId
   }
 }
-
 
 module aiProject './agent/standard-ai-project.bicep' = {
   name: '${projectName}${uniqueSuffix}deployment'
   scope: rg
   params: {
-    // workspace organization
+    aiServicesAccountName: aiDependencies.outputs.aiServicesName
     aiProjectName: '${projectName}${uniqueSuffix}'
     aiProjectFriendlyName: aiProjectFriendlyName
     aiProjectDescription: aiProjectDescription
-    location: 'eastus'
+    location: location
     tags: tags
-    
-    // dependent resources
-    capabilityHostName: '${projectName}${uniqueSuffix}${capabilityHostName}'
 
-    aiHubId: aiHub.outputs.aiHubID
-    acsConnectionName: aiHub.outputs.acsConnectionName
-    aoaiConnectionName: aiHub.outputs.aoaiConnectionName
-  }
-}
-
-module aiServiceRoleAssignments './agent/ai-service-role-assignments.bicep' = {
-  name: 'aiserviceroleassignments${projectName}${uniqueSuffix}deployment'
-  scope: rg
-  params: {
-    aiServicesName: aiDependencies.outputs.aiServicesName
-    aiProjectPrincipalId: aiProject.outputs.aiProjectPrincipalId
-    aiProjectId: aiProject.outputs.aiProjectResourceId
-  }
-}
-
-module aiSearchRoleAssignments './agent/ai-search-role-assignments.bicep' = {
-  name: 'aisearchroleassignments${projectName}${uniqueSuffix}deployment'
-  scope: rg
-  params: {
     aiSearchName: aiDependencies.outputs.aiSearchName
-    aiProjectPrincipalId: aiProject.outputs.aiProjectPrincipalId
-    aiProjectId: aiProject.outputs.aiProjectResourceId
+    aiSearchSubscriptionId: aiDependencies.outputs.aiSearchServiceSubscriptionId
+    aiSearchResourceGroupName: aiDependencies.outputs.aiSearchServiceResourceGroupName
+    storageAccountName: aiDependencies.outputs.storageAccountName
+    storageAccountSubscriptionId: aiDependencies.outputs.storageAccountSubscriptionId
+    storageAccountResourceGroupName: aiDependencies.outputs.storageAccountResourceGroupName
+    cosmosDbAccountName: aiDependencies.outputs.cosmosDbAccountName
+    cosmosDbAccountSubscriptionId: aiDependencies.outputs.cosmosDbAccountSubscriptionId
+    cosmosDbAccountResourceGroupName: aiDependencies.outputs.cosmosDbAccountResourceGroupName
   }
+}
+
+module projectRoleAssignments './agent/standard-ai-project-role-assignments.bicep' = {
+  name: 'aiprojectroleassignments${projectName}${uniqueSuffix}deployment'
+  scope: rg
+  params: {
+    aiProjectPrincipalId: aiProject.outputs.aiProjectPrincipalId
+    userPrincipalId: principalId
+    allowUserIdentityPrincipal: true
+    aiServicesName: aiDependencies.outputs.aiServicesName
+    aiSearchName: aiDependencies.outputs.aiSearchName
+    aiCosmosDbName: aiDependencies.outputs.cosmosDbAccountName
+    aiStorageAccountName: aiDependencies.outputs.storageAccountName
+    integrationStorageAccountName: storage.outputs.name
+    functionAppManagedIdentityPrincipalId: apiUserAssignedIdentity.outputs.identityPrincipalId
+    allowFunctionAppIdentityPrincipal: true
+  }
+}
+
+module aiProjectCapabilityHost './agent/standard-ai-project-capability-host.bicep' = {
+  name: 'capabilityhost${projectName}${uniqueSuffix}deployment'
+  scope: rg
+  params: {
+    aiServicesAccountName: aiDependencies.outputs.aiServicesName
+    projectName: aiProject.outputs.aiProjectName
+    aiSearchConnection: aiProject.outputs.aiSearchConnection
+    azureStorageConnection: aiProject.outputs.azureStorageConnection
+    cosmosDbConnection: aiProject.outputs.cosmosDbConnection
+
+    accountCapHost: '${accountCapabilityHostName}${uniqueSuffix}'
+    projectCapHost: '${projectCapabilityHostName}${uniqueSuffix}'
+  }
+  dependsOn: [ projectRoleAssignments ]
+}
+
+module postCapabilityHostCreationRoleAssignments './agent/post-capability-host-role-assignments.bicep' = {
+  name: 'postcaphostra${projectName}${uniqueSuffix}deployment'
+  scope: rg
+  params: {
+    aiProjectPrincipalId: aiProject.outputs.aiProjectPrincipalId
+    aiProjectWorkspaceId: aiProject.outputs.projectWorkspaceId
+    aiStorageAccountName: aiDependencies.outputs.storageAccountName
+    cosmosDbAccountName: aiDependencies.outputs.cosmosDbAccountName
+  }
+  dependsOn: [ aiProjectCapabilityHost ]
 }
 
 var storageRoleDefinitionId  = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b' // Storage Blob Data Owner role
@@ -346,18 +373,6 @@ module storageQueueDataContributorRoleAssignmentprocessor 'app/storage-Access.bi
     storageAccountName: storage.outputs.name
     roleDefinitionID: storageQueueDataContributorRoleDefinitionId
     principalID: apiUserAssignedIdentity.outputs.identityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Allow access from AI project to storage account using a managed identity
-module storageQueueDataContributorRoleAssignmentAIProject 'app/storage-Access.bicep' = {
-  name: 'storageQueueDataContributorRoleAssignmentAIProject'
-  scope: rg
-  params: {
-    storageAccountName: storage.outputs.name
-    roleDefinitionID: storageQueueDataContributorRoleDefinitionId
-    principalID: aiProject.outputs.aiProjectPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -435,17 +450,6 @@ module appInsightsRoleAssignmentApi './core/monitor/appinsights-access.bicep' = 
   }
 }
 
-var AzureAIAdministratorRoleDefinitionId = 'b78c5d69-af96-48a3-bf8d-a8b4d589de94' // Azure AI Administrator role ID
-// Enable access to AI Project from the Azure Function user assigned identity
-resource AIProjectRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(AzureAIAdministratorRoleDefinitionId, aiProjectName, resourceId('Microsoft.MachineLearningServices/workspaces', aiProjectName), resourceToken)
-  properties: {
-    roleDefinitionId: resourceId('Microsoft.Authorization/roleDefinitions', AzureAIAdministratorRoleDefinitionId)
-    principalId: apiUserAssignedIdentity.outputs.identityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 // Allow access from durable function to storage account using a user assigned managed identity
 module dtsRoleAssignment 'app/dts-Access.bicep' = {
   name: 'dtsRoleAssignment-${resourceToken}'
@@ -485,47 +489,6 @@ module dts './app/dts.bicep' = {
   }
 }
 
-module openAi 'core/ai/openai.bicep' = {
-  name: 'openai'
-  scope: rg
-  params: {
-    name: !empty(openAiServiceName) ? openAiServiceName : '${abbrs.cognitiveServicesAccounts}${resourceToken}'
-    location: 'eastus2'
-    tags: tags
-    publicNetworkAccess: skipVnet == 'false' ? 'Disabled' : 'Enabled'
-    sku: {
-      name: openAiSkuName
-    }
-    deployments: [
-      {
-        name: chatModel.deploymentName
-        capacity: chatModel.deploymentCapacity
-        model: {
-          format: 'OpenAI'
-          name: chatModel.modelName
-          version: chatModel.deploymentVersion
-        }
-        scaleSettings: {
-          scaleType: 'Standard'
-        }
-      }
-    ]
-  }
-}
-
-// Learn more about Azure role-based access control (RBAC) and built-in-roles at https://docs.microsoft.com/en-us/azure/role-based-access-control/overview
-var CognitiveServicesRoleDefinitionIds = ['5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'] // Cognitive Services OpenAI User
-module openAiRoleUser 'app/openai-Access.bicep' = {
-  scope: rg
-  name: 'openai-roles'
-  params: {
-    principalId: apiUserAssignedIdentity.outputs.identityPrincipalId
-    openAiAccountResourceName: openAi.outputs.name
-    roleDefinitionIds: CognitiveServicesRoleDefinitionIds
-  }
-}
-
-
 // App outputs
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.applicationInsightsConnectionString
 output AZURE_LOCATION string = location
@@ -534,5 +497,8 @@ output SERVICE_API_NAME string = api.outputs.SERVICE_API_NAME
 output SERVICE_API_URI string = api.outputs.SERVICE_API_URI
 output AZURE_FUNCTION_APP_NAME string = api.outputs.SERVICE_API_NAME
 output RESOURCE_GROUP string = resourceGroupName
-output PROJECT_CONNECTION_STRING string = aiProject.outputs.projectConnectionString
+output PROJECT_ENDPOINT string = aiProject.outputs.projectEndpoint
+output AZURE_OPENAI_ENDPOINT string = 'https://${aiDependencies.outputs.aiServicesName}.openai.azure.com/'
+output MODEL_DEPLOYMENT_NAME string = modelName
+output CHAT_MODEL_DEPLOYMENT_NAME string = modelName
 output STORAGE_CONNECTION__queueServiceUri string = 'https://${storage.outputs.name}.queue.${environment().suffixes.storage}'
