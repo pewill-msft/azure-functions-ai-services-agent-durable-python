@@ -6,6 +6,9 @@ import '../ChatInterface.css'; // Import the CSS file
 // Get API URL from environment variables. When unset (production on Static Web Apps),
 // fall back to '/api' so requests are same-origin and routed through SWA's linked backend.
 const API_URL = process.env.REACT_APP_API_URL || '/api';
+// Function key for AuthLevel.FUNCTION. Empty when running against the local
+// Functions host (which doesn't enforce keys by default).
+const FUNCTION_KEY = process.env.REACT_APP_FUNCTION_KEY || '';
 
 const ChatInterface = () => {
   const [messages, setMessages] = useState([]);
@@ -13,6 +16,7 @@ const ChatInterface = () => {
   const [loading, setLoading] = useState(false); // State to manage loading spinner
   
   const sendMessage = async () => {
+    if (loading) return; // Prevent re-entry while a request is in flight
     if (input.trim() === '') return;
 
     const newMessage = { role: 'user', content: `${input}` };
@@ -23,10 +27,12 @@ const ChatInterface = () => {
     setLoading(true); // Show loading spinner
 
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (FUNCTION_KEY) {
+        headers['x-functions-key'] = FUNCTION_KEY;
+      }
       const response = await axios.post(`${API_URL}/prompt`, JSON.stringify({ Prompt: input }), {
-        headers: {
-          'Content-Type': 'application/json'
-        }
+        headers
       });
 
       // Extract the response message from the backend
@@ -59,9 +65,10 @@ const ChatInterface = () => {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+            onKeyPress={(e) => e.key === 'Enter' && !loading && sendMessage()}
+            disabled={loading}
           />
-          <button onClick={sendMessage}>Send</button>
+          <button onClick={sendMessage} disabled={loading}>Send</button>
         </div>
       </div>
     </div>

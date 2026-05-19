@@ -388,6 +388,21 @@ module storageQueueDataContributorRoleAssignmentUserIdentityprocessor 'app/stora
   }
 }
 
+// Allow the user running azd to upload the deployment package zip to the
+// Flex Consumption deployment storage container.
+var storageBlobDataContributorRoleDefinitionId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe' // Storage Blob Data Contributor
+
+module storageBlobDataContributorRoleAssignmentUser 'app/storage-Access.bicep' = if (!empty(principalId)) {
+  name: 'storageBlobDataContributorRoleAssignmentUser'
+  scope: rg
+  params: {
+    storageAccountName: storage.outputs.name
+    roleDefinitionID: storageBlobDataContributorRoleDefinitionId
+    principalID: principalId
+    principalType: 'User'
+  }
+}
+
 var storageTableDataContributorRoleDefinitionId  = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3' // Storage Table Data Contributor
 
 module storageTableDataContributorRoleAssignmentprocessor 'app/storage-Access.bicep' = {

@@ -5,8 +5,16 @@ import requests
 import os
 import json
 import time
-from azure.ai.agents import AgentsClient
-from azure.ai.agents.models import AzureFunctionStorageQueue, AzureFunctionTool
+from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import (
+    AzureFunctionBinding,
+    AzureFunctionDefinition,
+    AzureFunctionDefinitionFunction,
+    AzureFunctionStorageQueue,
+    AzureFunctionTool,
+    PromptAgentDefinition,
+)
+from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.storage.queue import QueueClient, BinaryBase64EncodePolicy, BinaryBase64DecodePolicy
 from openai import AzureOpenAI
@@ -35,59 +43,90 @@ app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 input_queue_name = "input"
 output_queue_name = "output"
 
+# Stable agent name; the v2 SDK creates new immutable versions under the same name.
+AGENT_NAME = "azure-function-agent-summarize-github-issues"
+
+_project_client = None
+
+def get_project_client() -> AIProjectClient:
+    """Return a singleton AIProjectClient bound to the Foundry project endpoint."""
+    global _project_client
+    if _project_client is None:
+        _project_client = AIProjectClient(
+            endpoint=os.environ["PROJECT_ENDPOINT"],
+            credential=DefaultAzureCredential(),
+            allow_preview=True,
+        )
+    return _project_client
+
 def initialize_client():
     """
-    Initialize the agent client and the tools Azure Functions that the agent can use.
+    Ensure the v2 Foundry agent (with the AzureFunction storage-queue tool) exists,
+    and return a project client plus an OpenAI client bound to that agent.
     """
-    # Create an agents client pointed at the AI Foundry project endpoint
-    agents_client = AgentsClient(
-        endpoint=os.environ["PROJECT_ENDPOINT"],
-        credential=DefaultAzureCredential(),
-    )
+    project = get_project_client()
 
     # Storage queue service endpoint used to bridge Agent <-> Azure Function
-    storage_connection_string = os.environ.get("STORAGE_CONNECTION__queueServiceUri")
+    storage_service_endpoint = os.environ.get("STORAGE_CONNECTION__queueServiceUri")
 
     azure_function_tool = AzureFunctionTool(
-        name="GitHubIssuesSummaries",
-        description="Provide a summary of the GitHub issues for the organization within a specified time period.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "organization": {
-                    "type": "string",
-                    "description": "The organization to find GitHub issues for.",
+        azure_function=AzureFunctionDefinition(
+            function=AzureFunctionDefinitionFunction(
+                name="GitHubIssuesSummaries",
+                description="Provide a summary of the GitHub issues for the organization within a specified time period.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "organization": {
+                            "type": "string",
+                            "description": "The organization to find GitHub issues for.",
+                        },
+                        "time": {
+                            "type": "string",
+                            "description": "The specific time period for which the user is querying GitHub issues.",
+                        },
+                    },
+                    "required": ["time"],
                 },
-                "time": {
-                    "type": "string",
-                    "description": "The specific time period for which the user is querying GitHub issues.",
-                },
-            },
-            "required": ["time"],
-        },
-        input_queue=AzureFunctionStorageQueue(
-            queue_name=input_queue_name,
-            storage_service_endpoint=storage_connection_string,
-        ),
-        output_queue=AzureFunctionStorageQueue(
-            queue_name=output_queue_name,
-            storage_service_endpoint=storage_connection_string,
+            ),
+            input_binding=AzureFunctionBinding(
+                storage_queue=AzureFunctionStorageQueue(
+                    queue_name=input_queue_name,
+                    queue_service_endpoint=storage_service_endpoint,
+                ),
+            ),
+            output_binding=AzureFunctionBinding(
+                storage_queue=AzureFunctionStorageQueue(
+                    queue_name=output_queue_name,
+                    queue_service_endpoint=storage_service_endpoint,
+                ),
+            ),
         ),
     )
 
-    agent = agents_client.create_agent(
+    definition = PromptAgentDefinition(
         model=os.environ["AGENT_MODEL_DEPLOYMENT_NAME"],
-        name="azure-function-agent-summarize-github-issues",
         instructions="You are a helpful support agent. Answer the user's questions to the best of your ability.",
-        tools=azure_function_tool.definitions,
+        tools=[azure_function_tool],
     )
-    logging.info(f"Created agent, agent ID: {agent.id}")
 
-    # Create a thread for communication with the agent
-    thread = agents_client.threads.create()
-    logging.info(f"Created thread, thread ID: {thread.id}")
+    # Create a new version under the stable agent name. If the agent doesn't yet
+    # exist this also creates it. Versions are immutable so this is safe to call
+    # on every cold start.
+    try:
+        agent_version = project.agents.create_version(
+            agent_name=AGENT_NAME,
+            definition=definition,
+        )
+        logging.info(
+            f"Created agent version: {AGENT_NAME} (version {getattr(agent_version, 'version', '?')})"
+        )
+    except HttpResponseError as e:
+        # If a race / duplicate create happens, fall back to the latest existing version.
+        logging.warning(f"create_version returned {e.status_code}; using existing agent: {e.message}")
 
-    return agents_client, thread, agent
+    openai_client = project.get_openai_client(agent_name=AGENT_NAME)
+    return project, openai_client
 
 @app.route(route="prompt", auth_level=func.AuthLevel.ANONYMOUS)
 def prompt(req: func.HttpRequest) -> func.HttpResponse:
@@ -103,7 +142,8 @@ def prompt(req: func.HttpRequest) -> func.HttpResponse:
     allowed_origins = [
         "http://localhost:3000",
         "https://wonderful-wave-07c299e1e.6.azurestaticapps.net",
-        "https://stapp-web-5som3lu6awirw.azurestaticapps.net"
+        "https://stapp-web-5som3lu6awirw.azurestaticapps.net",
+        "https://icy-flower-08b6bcf03.7.azurestaticapps.net"
     ]
     
     # Choose the correct origin for CORS response or use * for development
@@ -124,46 +164,43 @@ def prompt(req: func.HttpRequest) -> func.HttpResponse:
 
     # Get the prompt from the request body
     req_body = req.get_json()
-    prompt = req_body.get('Prompt')
+    prompt_text = req_body.get('Prompt')
 
-    # Initialize the agent client
-    agents_client, thread, agent = initialize_client()
+    # Ensure the v2 agent exists and get an OpenAI client bound to it.
+    _project, openai_client = initialize_client()
 
-    last_msg = None
+    answer_text = None
+    debug_info = {}
     try:
-        # Send the prompt to the agent
-        message = agents_client.messages.create(
-            thread_id=thread.id,
-            role="user",
-            content=prompt,
+        # Invoke the agent via the Responses API. The Foundry runtime will
+        # transparently invoke the AzureFunction tool (input/output queues)
+        # when the model decides to call it, and resume once the result lands
+        # in the output queue.
+        response = openai_client.responses.create(
+            input=prompt_text,
+            parallel_tool_calls=False,
+            extra_body={"agent_reference": {"name": AGENT_NAME, "type": "agent_reference"}},
         )
-        logging.info(f"Created message, message ID: {message.id}")
-
-        # Run the agent and monitor its status
-        run = agents_client.runs.create(thread_id=thread.id, agent_id=agent.id)
-
-        while run.status in ["queued", "in_progress", "requires_action"]:
-            time.sleep(1)
-            run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-        logging.info(f"Run finished with status: {run.status}")
-
-        if run.status == "failed":
-            logging.error(f"Run failed: {run.last_error}")
-
-        # Get messages from the assistant thread and retrieve the last assistant message
-        messages = agents_client.messages.list(thread_id=thread.id)
-        for data_point in messages:
-            if data_point['role'] == "assistant":
-                last_msg = data_point['content'][-1]
-                logging.info(f"Last Message: {last_msg.text.value}")
-                break
-    finally:
-        # Delete the agent once done
         try:
-            agents_client.delete_agent(agent.id)
-        except Exception as e:
-            logging.warning(f"Failed to delete agent {agent.id}: {e}")
+            debug_info = json.loads(response.model_dump_json())
+        except Exception:
+            debug_info = {"repr": repr(response)[:2000]}
+        # Prefer the SDK convenience accessor when available.
+        answer_text = getattr(response, "output_text", None)
+        if not answer_text:
+            # Fall back to walking the structured output.
+            for item in getattr(response, "output", []) or []:
+                for part in getattr(item, "content", []) or []:
+                    text = getattr(part, "text", None)
+                    if text:
+                        answer_text = text
+                        break
+                if answer_text:
+                    break
+        logging.info(f"Agent response: {answer_text}")
+    except Exception as e:
+        logging.exception(f"Agent invocation failed: {e}")
+        debug_info = {"exception": repr(e)}
     
     # Get the origin from the request for response
     origin = req.headers.get('Origin', '')
@@ -172,14 +209,18 @@ def prompt(req: func.HttpRequest) -> func.HttpResponse:
     allowed_origins = [
         "http://localhost:3000",
         "https://wonderful-wave-07c299e1e.6.azurestaticapps.net",
-        "https://stapp-web-5som3lu6awirw.azurestaticapps.net"
+        "https://stapp-web-5som3lu6awirw.azurestaticapps.net",
+        "https://icy-flower-08b6bcf03.7.azurestaticapps.net"
     ]
     
     # Choose the correct origin for CORS response
     cors_origin = origin if origin in allowed_origins else "*"
     
     # Prepare response with proper CORS headers
-    response_message = {"message": last_msg.text.value if last_msg else "No response generated"}
+    response_message = {
+        "message": answer_text if answer_text else "No response generated",
+        "debug": debug_info,
+    }
     
     return func.HttpResponse(
         json.dumps(response_message),
@@ -200,12 +241,12 @@ async def process_queue_message(msg: func.QueueMessage, client) -> None:
     Function to start orchestration when a message is received in the queue.
     """
     logging.info('Python queue trigger function processed a queue item')
-    
+
     messagepayload = json.loads(msg.get_body().decode('utf-8'))
 
     instance_id = await client.start_new("SummarizeGitHubIssues", None, messagepayload)
 
-    logging.info('Started orchestration with ID = {instance_id}')
+    logging.info(f'Started orchestration with ID = {instance_id}')
     
 @app.function_name(name="SummarizeGitHubIssues")
 @app.orchestration_trigger(context_name="context")
@@ -219,13 +260,15 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
     
     messagepayload = context.get_input()
     correlation_id = messagepayload['CorrelationId']
-    organization = messagepayload.get('organization')
-    repo = messagepayload.get('repo')
-    
+    function_args = messagepayload.get('function_args', {})
+    organization = function_args.get('organization') or messagepayload.get('organization')
+    repo = function_args.get('repo') or messagepayload.get('repo')
+    prompt_time = function_args.get('time') or messagepayload.get('time')
+
     # Initialize the time dictionary with actual values
     time = {
         "current_date_time": datetime.utcnow().isoformat() + 'Z',
-        "prompt_time": messagepayload['time']
+        "prompt_time": prompt_time
     }
 
     # Query repositories for the organization using an activity function
