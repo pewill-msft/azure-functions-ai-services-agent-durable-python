@@ -220,10 +220,6 @@ module api './app/api.bicep' = {
       STORAGE_CONNECTION__queueServiceUri: 'https://${storage.outputs.name}.queue.${environment().suffixes.storage}'
       DURABLE_TASK_SCHEDULER_CONNECTION_STRING: 'Endpoint=${dts.outputs.dts_URL};Authentication=ManagedIdentity;ClientID=${apiUserAssignedIdentity.outputs.identityClientId}'
       TASKHUB_NAME: dts.outputs.TASKHUB_NAME
-      // One AI Services (Foundry) account serves BOTH the Agent runtime and
-      // the Azure Functions OpenAI binding. The 'openai.azure.com' alias
-      // resolves to the same account thanks to customSubDomainName.
-      AZURE_OPENAI_ENDPOINT: 'https://${aiDependencies.outputs.aiServicesName}.openai.azure.com/'
       CHAT_MODEL_DEPLOYMENT_NAME: modelName
       AGENT_MODEL_DEPLOYMENT_NAME: modelName
       GITHUB_ACCESS_TOKEN: githubAccessToken
@@ -513,7 +509,6 @@ output SERVICE_API_URI string = api.outputs.SERVICE_API_URI
 output AZURE_FUNCTION_APP_NAME string = api.outputs.SERVICE_API_NAME
 output RESOURCE_GROUP string = resourceGroupName
 output PROJECT_ENDPOINT string = aiProject.outputs.projectEndpoint
-output AZURE_OPENAI_ENDPOINT string = 'https://${aiDependencies.outputs.aiServicesName}.openai.azure.com/'
 output MODEL_DEPLOYMENT_NAME string = modelName
 output CHAT_MODEL_DEPLOYMENT_NAME string = modelName
 output STORAGE_CONNECTION__queueServiceUri string = 'https://${storage.outputs.name}.queue.${environment().suffixes.storage}'

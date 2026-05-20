@@ -5,7 +5,16 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: url('bg.jpeg');
+  color: #c9d1d9;
+  min-height: 100vh;
+  background-color: #0d1117;
+  background-image:
+    linear-gradient(rgba(13, 17, 23, 0.78), rgba(13, 17, 23, 0.88)),
+    url('bg.jpeg');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
 }
 
 code {

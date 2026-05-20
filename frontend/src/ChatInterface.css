@@ -1,133 +1,174 @@
-/* ChatInterface.css */
+/* GitHub dark color palette */
+:root {
+  --gh-canvas: #0d1117;
+  --gh-canvas-subtle: #161b22;
+  --gh-canvas-inset: #010409;
+  --gh-border: #30363d;
+  --gh-border-muted: #21262d;
+  --gh-fg: #c9d1d9;
+  --gh-fg-muted: #8b949e;
+  --gh-accent: #58a6ff;
+  --gh-btn: #238636;
+  --gh-btn-hover: #2ea043;
+  --gh-user-bubble: #1f6feb;
+  --gh-bot-bubble: #161b22;
+}
+
 .page-container {
   max-width: 1024px;
   margin: 0 auto;
+  padding: 0 16px;
 }
 
-/* ChatInterface.css */
 .chat-title-container {
-  height: 81px; /* Set the height to 50% of the viewport height */
+  height: 81px;
   max-width: 1024px;
   margin-top: 50px;
   vertical-align: middle;
-  border: 1px solid #ccc;
+  border: 1px solid var(--gh-border);
   border-bottom: none;
-  border-radius: 8px 8px 0px 0px; /* Only bottom corners are rounded */
+  border-radius: 8px 8px 0 0;
   overflow: hidden;
-  background: #F4F4F9;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Add drop shadow */
+  background: var(--gh-canvas-subtle);
+  box-shadow: 0 8px 24px rgba(1, 4, 9, 0.6);
 }
 
-/* ChatInterface.css */
 .chat-container {
   display: flex;
   flex-direction: column;
-  height: 85vh; /* Set the height to 50% of the viewport height */
+  height: 85vh;
   max-width: 1024px;
   margin: 0 auto;
-  border: 1px solid #ccc;
-  border-radius: 0 0 8px 8px; /* Only bottom corners are rounded */
+  border: 1px solid var(--gh-border);
+  border-radius: 0 0 8px 8px;
   overflow: hidden;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Add drop shadow */
+  background-color: var(--gh-canvas);
+  box-shadow: 0 12px 32px rgba(1, 4, 9, 0.7);
 }
 
 .chat-history {
   flex: 1;
-  padding: 10px;
-  overflow-y: auto; /* Enable vertical scrolling */
-  background-color: #F4F4F9
+  padding: 16px;
+  overflow-y: auto;
+  background-color: var(--gh-canvas);
+  color: var(--gh-fg);
 }
 
 .chat-message {
-  margin-bottom: 10px;
-  padding: 10px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
   border-radius: 8px;
   max-width: 100%;
-  word-wrap: break-word; /* Ensure text wraps inside the chat messages */
-  overflow-wrap: break-word; /* Break long words to keep text inside the container */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  border: 1px solid var(--gh-border-muted);
+  color: var(--gh-fg);
 }
 
 .chat-message.user {
-  background-color: #96BECF;
+  background-color: var(--gh-user-bubble);
+  border-color: transparent;
+  color: #ffffff;
   align-self: flex-end;
-
-  pre{
-    word-wrap: break-word; /* Ensure text wraps inside the chat messages */
-    overflow-wrap: break-word; /* Break long words to keep text inside the container */
-  };
 }
 
 .chat-message.bot {
-  background-color: #E6F4E6;
+  background-color: var(--gh-bot-bubble);
   align-self: flex-start;
-  word-wrap: break-word; /* Ensure text wraps inside the chat messages */
-  overflow-wrap: break-word; /* Break long words to keep text inside the container */
+}
 
-  pre{
-    word-wrap: break-word; /* Ensure text wraps inside the chat messages */
-    overflow-wrap: break-word; /* Break long words to keep text inside the container */
-  };
+.chat-message pre,
+.chat-message code {
+  background-color: var(--gh-canvas-inset);
+  color: var(--gh-fg);
+  border-radius: 6px;
+  padding: 2px 6px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
 
+.chat-message a {
+  color: var(--gh-accent);
 }
 
 .chat-input {
   display: flex;
-  padding: 10px;
-  background-color: #fff;
-  border-top: 1px solid #ccc;
+  padding: 12px;
+  background-color: var(--gh-canvas-subtle);
+  border-top: 1px solid var(--gh-border);
 }
 
 .chat-input input {
   flex: 1;
-  padding: 10px;
-  border: 1px solid #ccc;
-  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--gh-border);
+  border-radius: 6px;
   margin-right: 10px;
+  background-color: var(--gh-canvas-inset);
+  color: var(--gh-fg);
+  outline: none;
+}
+
+.chat-input input::placeholder {
+  color: var(--gh-fg-muted);
+}
+
+.chat-input input:focus {
+  border-color: var(--gh-accent);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.25);
 }
 
 .chat-input button {
-  padding: 10px 20px;
-  border: none;
-  border-radius: 8px;
-  background-color: #0056b3;
-  color: #fff;
+  padding: 10px 18px;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  border-radius: 6px;
+  background-color: var(--gh-btn);
+  color: #ffffff;
   cursor: pointer;
+  font-weight: 600;
 }
 
-.chat-input button:hover {
-  background-color: #7DAAE6;
+.chat-input button:hover:not(:disabled) {
+  background-color: var(--gh-btn-hover);
+}
+
+.chat-input button:disabled,
+.chat-input input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .chat-message.user::before {
   content: "User: ";
-  font-weight: bold;
+  font-weight: 600;
 }
 
 .chat-message.bot::before {
   content: "GitHub Agent: ";
-  font-weight: bold;
+  font-weight: 600;
+  color: var(--gh-fg-muted);
 }
 
 .loading-spinner {
-  border: 4px solid rgba(0, 0, 0, 0.1);
-  border-left-color: #888;
+  border: 3px solid var(--gh-border);
+  border-left-color: var(--gh-accent);
   border-radius: 50%;
   width: 24px;
   height: 24px;
   animation: spin 1s linear infinite;
-  margin: 10px auto;
+  margin: 16px auto;
 }
 
 @keyframes spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 h1 {
-  color:  black;
+  color: var(--gh-fg);
   padding-left: 25px;
+  margin: 0;
+  line-height: 81px;
+  font-size: 22px;
+  font-weight: 600;
 }

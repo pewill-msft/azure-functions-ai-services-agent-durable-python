@@ -15,26 +15,18 @@ from azure.ai.projects.models import (
     PromptAgentDefinition,
 )
 from azure.core.exceptions import HttpResponseError
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity import DefaultAzureCredential
 from azure.storage.queue import QueueClient, BinaryBase64EncodePolicy, BinaryBase64DecodePolicy
-from openai import AzureOpenAI
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-_aoai_client = None
+_llm_client = None
 
-def get_aoai_client() -> AzureOpenAI:
-    """Return a singleton AzureOpenAI client authenticated via AAD."""
-    global _aoai_client
-    if _aoai_client is None:
-        token_provider = get_bearer_token_provider(
-            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
-        )
-        _aoai_client = AzureOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-            azure_ad_token_provider=token_provider,
-            api_version="2024-10-21",
-        )
-    return _aoai_client
+def get_llm_client():
+    """Return a singleton OpenAI-compatible chat client routed through the Foundry project."""
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = get_project_client().get_openai_client()
+    return _llm_client
 
 # Initialize the Durable Functions app with anonymous HTTP authentication level
 app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -166,7 +158,7 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
 
     # Initialize the time dictionary with actual values
     time = {
-        "current_date_time": datetime.utcnow().isoformat() + 'Z',
+        "current_date_time": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
         "prompt_time": prompt_time
     }
 
@@ -176,14 +168,14 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
         repo_names = repos["repositories"]
     else:
         prompt = f"Return *only* the GitHub organization name for the repository: {repo}"
-        organization = yield context.call_activity_with_retry("AskAOAI", retry_options, prompt)
+        organization = yield context.call_activity_with_retry("AskLLM", retry_options, prompt)
         repo_names = [repo]
 
     # Correctly format the prompt string using f-string
     prompt = f"Assume the current time is {time['current_date_time']}. Convert the following time to ISO format and return *only* the converted time in the format 'YYYY-MM-DDTHH:MM:SSZ': {time['prompt_time']}"
 
     # Convert time to ISO format using an activity function
-    converted_time = yield context.call_activity_with_retry("AskAOAI", retry_options, prompt)
+    converted_time = yield context.call_activity_with_retry("AskLLM", retry_options, prompt)
     
     # Fan-out: Create a list of tasks to get issues for each repository
     tasks = []
@@ -202,7 +194,7 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
     # Filter out empty arrays of objects
     allIssues = filter_empty_issues(all_issues)
 
-    # Call the activity function to generate a summary using Azure OpenAI
+    # Call the activity function to generate a summary using the LLM
     summary = yield context.call_activity_with_retry("SummarizeIssues", retry_options, allIssues)
 
     logging.info(f"summary: {summary}")
@@ -260,14 +252,14 @@ def get_repos(organization):
 
     return result
 
-@app.function_name(name="AskAOAI")
+@app.function_name(name="AskLLM")
 @app.activity_trigger(input_name='prompt')
 def ask_llm(prompt: str):
     """
-    Activity function that asks Azure OpenAI a question via chat completions.
+    Activity function that asks the Foundry-hosted LLM a question via chat completions.
     """
-    logging.info("in AskAOAI activity")
-    client = get_aoai_client()
+    logging.info("in AskLLM activity")
+    client = get_llm_client()
     completion = client.chat.completions.create(
         model=os.environ["CHAT_MODEL_DEPLOYMENT_NAME"],
         messages=[{"role": "user", "content": prompt}],
@@ -323,10 +315,10 @@ def get_issues(queryDetails):
 @app.activity_trigger(input_name='allIssues')
 def summarize_issues(allIssues):
     """
-    Activity function to generate a summary using Azure OpenAI chat completions.
+    Activity function to generate a summary using the Foundry-hosted LLM via chat completions.
     """
     logging.info("in SummarizeIssues activity")
-    client = get_aoai_client()
+    client = get_llm_client()
     completion = client.chat.completions.create(
         model=os.environ["CHAT_MODEL_DEPLOYMENT_NAME"],
         messages=[{"role": "user", "content": f"Generate a summary of the following GitHub issues and determine: {allIssues}"}],
