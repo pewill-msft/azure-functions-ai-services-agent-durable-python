@@ -106,7 +106,11 @@ def initialize_client():
 
     definition = PromptAgentDefinition(
         model=os.environ["AGENT_MODEL_DEPLOYMENT_NAME"],
-        instructions="You are a helpful support agent. Answer the user's questions to the best of your ability.",
+        instructions=(
+            "You are a GitHub issues assistant. Use the GitHubIssuesSummaries"
+            " tool to answer the user's question and present the result as a"
+            " concise summary grouped by repository."
+        ),
         tools=[azure_function_tool],
     )
 
@@ -127,111 +131,6 @@ def initialize_client():
 
     openai_client = project.get_openai_client(agent_name=AGENT_NAME)
     return project, openai_client
-
-@app.route(route="prompt", auth_level=func.AuthLevel.ANONYMOUS)
-def prompt(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    HTTP trigger function to handle prompts and interact with the agent.
-    """
-    logging.info('Python HTTP trigger function processed a request.')
-    
-    # Get the origin from the request
-    origin = req.headers.get('Origin', '')
-    
-    # List of allowed origins - both local and production
-    allowed_origins = [
-        "http://localhost:3000",
-        "https://wonderful-wave-07c299e1e.6.azurestaticapps.net",
-        "https://stapp-web-5som3lu6awirw.azurestaticapps.net",
-        "https://icy-flower-08b6bcf03.7.azurestaticapps.net"
-    ]
-    
-    # Choose the correct origin for CORS response or use * for development
-    cors_origin = origin if origin in allowed_origins else "*"
-    
-    # Handle OPTIONS request for CORS preflight
-    if req.method == "OPTIONS":
-        return func.HttpResponse(
-            status_code=204,
-            headers={
-                'Access-Control-Allow-Origin': cors_origin,
-                'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-                'Access-Control-Allow-Credentials': 'true',
-                'Access-Control-Max-Age': '86400'
-            }
-        )
-
-    # Get the prompt from the request body
-    req_body = req.get_json()
-    prompt_text = req_body.get('Prompt')
-
-    # Ensure the v2 agent exists and get an OpenAI client bound to it.
-    _project, openai_client = initialize_client()
-
-    answer_text = None
-    debug_info = {}
-    try:
-        # Invoke the agent via the Responses API. The Foundry runtime will
-        # transparently invoke the AzureFunction tool (input/output queues)
-        # when the model decides to call it, and resume once the result lands
-        # in the output queue.
-        response = openai_client.responses.create(
-            input=prompt_text,
-            parallel_tool_calls=False,
-            extra_body={"agent_reference": {"name": AGENT_NAME, "type": "agent_reference"}},
-        )
-        try:
-            debug_info = json.loads(response.model_dump_json())
-        except Exception:
-            debug_info = {"repr": repr(response)[:2000]}
-        # Prefer the SDK convenience accessor when available.
-        answer_text = getattr(response, "output_text", None)
-        if not answer_text:
-            # Fall back to walking the structured output.
-            for item in getattr(response, "output", []) or []:
-                for part in getattr(item, "content", []) or []:
-                    text = getattr(part, "text", None)
-                    if text:
-                        answer_text = text
-                        break
-                if answer_text:
-                    break
-        logging.info(f"Agent response: {answer_text}")
-    except Exception as e:
-        logging.exception(f"Agent invocation failed: {e}")
-        debug_info = {"exception": repr(e)}
-    
-    # Get the origin from the request for response
-    origin = req.headers.get('Origin', '')
-    
-    # List of allowed origins - both local and production
-    allowed_origins = [
-        "http://localhost:3000",
-        "https://wonderful-wave-07c299e1e.6.azurestaticapps.net",
-        "https://stapp-web-5som3lu6awirw.azurestaticapps.net",
-        "https://icy-flower-08b6bcf03.7.azurestaticapps.net"
-    ]
-    
-    # Choose the correct origin for CORS response
-    cors_origin = origin if origin in allowed_origins else "*"
-    
-    # Prepare response with proper CORS headers
-    response_message = {
-        "message": answer_text if answer_text else "No response generated",
-        "debug": debug_info,
-    }
-    
-    return func.HttpResponse(
-        json.dumps(response_message),
-        mimetype="application/json",
-        headers={
-            'Access-Control-Allow-Origin': cors_origin,
-            'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-            'Access-Control-Allow-Credentials': 'true'
-        }
-    )
 
 @app.function_name(name="GitHubIssuesSummaries")
 @app.durable_client_input(client_name="client")
@@ -440,3 +339,79 @@ def filter_empty_issues(allIssues):
     Function to filter out empty arrays of objects.
     """
     return [issue for issue in allIssues if issue]
+
+@app.route(route="prompt", auth_level=func.AuthLevel.ANONYMOUS)
+def prompt(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    HTTP trigger function to handle prompts and interact with the agent.
+    """
+    logging.info('Python HTTP trigger function processed a request.')
+
+    origin = req.headers.get('Origin', '')
+    allowed_origins = [
+        "http://localhost:3000",
+        "https://wonderful-wave-07c299e1e.6.azurestaticapps.net",
+        "https://stapp-web-5som3lu6awirw.azurestaticapps.net",
+        "https://icy-flower-08b6bcf03.7.azurestaticapps.net"
+    ]
+    cors_origin = origin if origin in allowed_origins else "*"
+
+    if req.method == "OPTIONS":
+        return func.HttpResponse(
+            status_code=204,
+            headers={
+                'Access-Control-Allow-Origin': cors_origin,
+                'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                'Access-Control-Allow-Credentials': 'true',
+                'Access-Control-Max-Age': '86400'
+            }
+        )
+
+    req_body = req.get_json()
+    prompt_text = req_body.get('Prompt')
+
+    _project, openai_client = initialize_client()
+
+    answer_text = None
+    debug_info = {}
+    try:
+        response = openai_client.responses.create(
+            input=prompt_text,
+            parallel_tool_calls=False,
+            extra_body={"agent_reference": {"name": AGENT_NAME, "type": "agent_reference"}},
+        )
+        try:
+            debug_info = json.loads(response.model_dump_json())
+        except Exception:
+            debug_info = {"repr": repr(response)[:2000]}
+        answer_text = getattr(response, "output_text", None)
+        if not answer_text:
+            for item in getattr(response, "output", []) or []:
+                for part in getattr(item, "content", []) or []:
+                    text = getattr(part, "text", None)
+                    if text:
+                        answer_text = text
+                        break
+                if answer_text:
+                    break
+        logging.info(f"Agent response: {answer_text}")
+    except Exception as e:
+        logging.exception(f"Agent invocation failed: {e}")
+        debug_info = {"exception": repr(e)}
+
+    response_message = {
+        "message": answer_text if answer_text else "No response generated",
+        "debug": debug_info,
+    }
+
+    return func.HttpResponse(
+        json.dumps(response_message),
+        mimetype="application/json",
+        headers={
+            'Access-Control-Allow-Origin': cors_origin,
+            'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+            'Access-Control-Allow-Credentials': 'true'
+        }
+    )
