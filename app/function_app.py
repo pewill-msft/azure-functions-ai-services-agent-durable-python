@@ -158,7 +158,7 @@ def summarize_github_issues(context: df.DurableOrchestrationContext):
     retry_options = df.RetryOptions(first_retry_interval_in_milliseconds, max_number_of_attempts)
     
     messagepayload = context.get_input()
-    correlation_id = messagepayload['CorrelationId']
+    correlation_id = messagepayload['Correlationid']
     function_args = messagepayload.get('function_args', {})
     organization = function_args.get('organization') or messagepayload.get('organization')
     repo = function_args.get('repo') or messagepayload.get('repo')
